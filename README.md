@@ -1,7 +1,7 @@
 
 # Number Plate Recognition (NPR)
 
-A Python-based Number Plate Recognition system that processes video files to detect, track, and recognize license plates.
+A Python-based Number Plate Recognition system that processes video files to enhance, detect, track, and recognize license plates from bad quality video.
 
 ## Features
 
