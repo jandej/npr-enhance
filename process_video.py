@@ -2,6 +2,7 @@
 import cv2
 import numpy as np
 import pytesseract
+from pytesseract import Output
 import argparse
 from math import sqrt
 
@@ -23,9 +24,28 @@ class PlateTracker:
         return (x + w // 2, y + h // 2)
 
 # --- Main Processing Function ---
-def process_video(video_path, debug=False):
+def process_video(video_path, debug=False, use_gpu=False):
+    # Check for CUDA availability if GPU is requested
+    if use_gpu:
+        try:
+            cv2.cuda.getCudaEnabledDeviceCount()
+            print("GPU is available. Using CUDA for processing.")
+        except cv2.error:
+            print("Error: OpenCV is not compiled with CUDA support. Falling back to CPU.")
+            use_gpu = False
+
     # Load the Haar Cascade for plate detection
-    plate_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+    if use_gpu:
+        try:
+            plate_cascade = cv2.cuda.CascadeClassifier_create(CASCADE_PATH)
+        except AttributeError:
+            print("Error: Your OpenCV installation does not support GPU-accelerated cascade classifiers.")
+            print("Falling back to CPU.")
+            use_gpu = False
+            plate_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+    else:
+        plate_cascade = cv2.CascadeClassifier(CASCADE_PATH)
+    
     if plate_cascade.empty():
         print(f"Error: Could not load Haar Cascade from {CASCADE_PATH}")
         return
@@ -47,7 +67,17 @@ def process_video(video_path, debug=False):
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         
         # Detect plates
-        detected_plates = plate_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5)
+        if use_gpu:
+            gpu_gray_frame = cv2.cuda_GpuMat()
+            gpu_gray_frame.upload(gray_frame)
+            detected_plates_gpu = plate_cascade.detectMultiScale(gpu_gray_frame)
+            detected_plates = detected_plates_gpu.download()
+            if detected_plates is None:
+                detected_plates = []
+            else:
+                detected_plates = detected_plates[0]
+        else:
+            detected_plates = plate_cascade.detectMultiScale(gray_frame, scaleFactor=1.1, minNeighbors=5)
 
         # --- Tracking Logic ---
         matched_tracker_ids = []
@@ -126,14 +156,18 @@ def process_video(video_path, debug=False):
                 enhanced_plate = cv2.bitwise_not(enhanced_plate)
 
                 # --- OCR ---
-                # Use Tesseract to get the text
+                # Use Tesseract to get the text and confidence
                 custom_config = r'--oem 3 --psm 6 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-'
-                text = pytesseract.image_to_string(enhanced_plate, config=custom_config).strip()
+                data = pytesseract.image_to_data(enhanced_plate, config=custom_config, output_type=Output.DICT)
                 
+                text = "".join(data['text']).strip()
+                confidences = [int(c) for c in data['conf'] if int(c) != -1]
+                avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+
                 if text and len(text) > 3:
                     tracker.recognized_text = text
                     print(f"===================================")
-                    print(f"Plate Recognized! Text: {text}")
+                    print(f"Plate Recognized! Text: {text}, Confidence: {avg_confidence:.2f}%")
                     print(f"===================================")
                     if debug:
                         cv2.imshow(f"Enhanced Plate ID: {tracker.id}", enhanced_plate)
@@ -167,6 +201,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Process a video to recognize number plates.")
     parser.add_argument("--video", required=True, help="Path to the video file.")
     parser.add_argument("--debug", action='store_true', help="Enable debug mode to show video output.")
+    parser.add_argument("--gpu", action='store_true', help="Enable GPU acceleration for processing.")
     args = parser.parse_args()
 
-    process_video(args.video, args.debug)
+    process_video(args.video, args.debug, args.gpu)
+
